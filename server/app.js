@@ -1,0 +1,33 @@
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import {User,Leave,Attendance,Announcement,Training} from './models.js';
+export function createApp(secret){
+ const app=express();app.use(helmet());app.use(cors({origin:process.env.CLIENT_ORIGIN||'http://127.0.0.1:5173'}));app.use(express.json({limit:'100kb'}));
+ app.get('/api/health',(_q,s)=>s.json({status:'ok'}));
+ app.post('/api/auth/login',rateLimit({windowMs:900000,limit:40}),async(q,s)=>{const u=await User.findOne({email:String(q.body.email||'').trim().toLowerCase(),active:true});if(!u||!await bcrypt.compare(String(q.body.password||''),u.password))return s.status(401).json({message:'Email or password is incorrect.'});s.json({token:jwt.sign({id:u.id},secret,{expiresIn:'8h'}),user:u});});
+ app.use('/api',async(q,s,next)=>{try{const payload=jwt.verify((q.headers.authorization||'').replace(/^Bearer /,''),secret);q.user=await User.findOne({_id:payload.id,active:true});if(!q.user)throw Error();next();}catch{return s.status(401).json({message:'Please sign in again.'});}});
+ const roles=(...allowed)=>(q,s,next)=>allowed.includes(q.user.role)?next():s.status(403).json({message:'You do not have access to this action.'});
+ const pick=(body,fields)=>Object.fromEntries(fields.filter(k=>body[k]!==undefined).map(k=>[k,body[k]]));
+ const validDate=v=>v&&Number.isFinite(new Date(v).getTime());
+ app.get('/api/me',(q,s)=>s.json(q.user));
+ app.patch('/api/me',async(q,s)=>{Object.assign(q.user,pick(q.body,['name','phone']));await q.user.save();s.json(q.user);});
+ app.get('/api/employees',async(q,s)=>{const users=await User.find({active:true}).sort({name:1});s.json(q.user.role==='employee'?users.map(u=>({_id:u.id,name:u.name,department:u.department,title:u.title,email:u.email,role:u.role})):users);});
+ app.post('/api/employees',roles('hr'),async(q,s)=>{const {name,email,password,role,department,title}=q.body;if(!name||!email||!/^\S+@\S+\.\S+$/.test(email)||!password||password.length<8)return s.status(400).json({message:'Enter a name, valid email and password of at least 8 characters.'});s.status(201).json(await User.create({name,email:email.toLowerCase(),password:await bcrypt.hash(password,12),role,department,title}));});
+ app.patch('/api/employees/:id',roles('hr'),async(q,s)=>{const u=await User.findById(q.params.id);if(!u)return s.status(404).json({message:'Employee not found.'});if(q.user.id===u.id&&q.body.active===false)return s.status(400).json({message:'You cannot deactivate your own account.'});Object.assign(u,pick(q.body,['name','department','title','phone','active']));await u.save();s.json(u);});
+ app.get('/api/leaves',async(q,s)=>{let filter={};if(q.user.role==='employee')filter.user=q.user.id;if(q.user.role==='manager')filter.user={$in:(await User.find({department:q.user.department})).map(u=>u.id)};s.json(await Leave.find(filter).populate('user','name department').sort({createdAt:-1}));});
+ app.post('/api/leaves',async(q,s)=>{const {type,start,end,reason}=q.body;if(!validDate(start)||!validDate(end)||new Date(end)<new Date(start)||!reason?.trim())return s.status(400).json({message:'Enter a reason and valid start and end dates.'});if(await Leave.exists({user:q.user.id,status:{$ne:'Rejected'},start:{$lte:new Date(end)},end:{$gte:new Date(start)}}))return s.status(409).json({message:'You already have a leave request for these dates.'});s.status(201).json(await Leave.create({user:q.user.id,type,start,end,reason}));});
+ app.patch('/api/leaves/:id',roles('hr','manager'),async(q,s)=>{const l=await Leave.findById(q.params.id).populate('user');if(!l)return s.status(404).json({message:'Request not found.'});if(l.user.id===q.user.id)return s.status(403).json({message:'You cannot review your own leave.'});if(q.user.role==='manager'&&l.user.department!==q.user.department)return s.status(403).json({message:'You can only review your team.'});if(l.status!=='Pending'||!['Approved','Rejected'].includes(q.body.status))return s.status(400).json({message:'This request cannot be updated.'});l.status=q.body.status;l.reviewedBy=q.user.id;await l.save();s.json(l);});
+ app.get('/api/attendance',async(q,s)=>{const filter=q.user.role==='hr'?{}:q.user.role==='manager'?{user:{$in:(await User.find({department:q.user.department})).map(u=>u.id)}}:{user:q.user.id};s.json(await Attendance.find(filter).populate('user','name department').sort({date:-1}));});
+ app.post('/api/attendance',async(q,s)=>{const date=new Date().toISOString().slice(0,10);let record=await Attendance.findOne({user:q.user.id,date});if(q.body.action==='in'){if(record)return s.status(409).json({message:'You have already checked in today.'});record=await Attendance.create({user:q.user.id,date,checkIn:new Date()});}else if(q.body.action==='out'){if(!record||record.checkOut)return s.status(400).json({message:'Check in first, or you have already checked out.'});record.checkOut=new Date();await record.save();}else return s.status(400).json({message:'Invalid attendance action.'});s.json(record);});
+ app.get('/api/announcements',async(_q,s)=>s.json(await Announcement.find().populate('author','name').sort({createdAt:-1})));
+ app.post('/api/announcements',roles('hr'),async(q,s)=>s.status(201).json(await Announcement.create({...pick(q.body,['title','body','category']),author:q.user.id})));
+ app.get('/api/training',async(q,s)=>s.json(await Training.find(q.user.role==='hr'?{}:{department:q.user.department}).populate('manager','name').sort({date:1})));
+ app.post('/api/training',roles('hr','manager'),async(q,s)=>{if(!validDate(q.body.date))return s.status(400).json({message:'Enter a valid date.'});s.status(201).json(await Training.create({...pick(q.body,['title','description','date']),department:q.user.role==='manager'?q.user.department:q.body.department,manager:q.user.id}));});
+ app.post('/api/training/:id/enroll',async(q,s)=>{const t=await Training.findById(q.params.id);if(!t)return s.status(404).json({message:'Training not found.'});if(q.user.role!=='hr'&&t.department!==q.user.department)return s.status(403).json({message:'This session is for another team.'});await Training.updateOne({_id:t.id},{$addToSet:{attendees:q.user.id}});s.json({message:'You are enrolled.'});});
+ app.use('/api',(_q,s)=>s.status(404).json({message:'Endpoint not found.'}));
+ app.use((err,_q,s,_next)=>{if(err.code===11000)return s.status(409).json({message:'This record already exists.'});if(['ValidationError','CastError'].includes(err.name))return s.status(400).json({message:'Please check the entered values.'});console.error(err);s.status(500).json({message:'Something went wrong. Please try again.'});});return app;
+}
