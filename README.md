@@ -59,7 +59,7 @@ node server/bootstrap.js
 
 The command refuses to run when an active HR administrator exists. Sign in as HR and add employees through People.
 
-Production: build the client, configure environment variables, run `npm start` behind an HTTPS reverse proxy. The server binds to loopback by default; adapt the listen settings for your deployment host. Express serves the built frontend and API from one origin. No deployment or GitHub remote has been configured.
+Production: build the client, configure environment variables, run `npm start` behind an HTTPS reverse proxy. The server binds to loopback by default; adapt the listen settings for your deployment host. Express serves the built frontend and API from one origin. Source repository: https://github.com/Prakhar1301/StaffSync. The application has not been deployed.
 
 ## Verification
 
@@ -82,4 +82,5 @@ Integration tests start isolated real MongoDB and verify authentication, employe
 - `server/bootstrap.js`: persistent database initial administrator
 - `server/app.test.js`: integration tests
 
-Git history records meaningful implementation chunks. No GitHub push or SkillWallet submission has been performed.
+Git history records meaningful implementation chunks. The project is published at https://github.com/Prakhar1301/StaffSync. No SkillWallet submission has been performed.
+
